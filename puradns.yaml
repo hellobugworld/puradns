@@ -1,0 +1,84 @@
+# PuraDNS配置文件
+
+# 服务器配置
+listen_addr: "[::]:53"
+
+# 资源文件配置
+resource:
+  china_ip_path: "/etc/puradns/rules/china-ip.txt"
+  china_list_path: "/etc/puradns/rules/chinalist.txt"
+  gfw_list_path: "/etc/puradns/rules/gfwlist.txt"
+  update_interval: 24h
+  # URL配置，用于定时拉取最新规则文件
+  urls:
+    china_ip: "https://res.343.re/share/cleardns/china-ip.txt"
+    china_list: "https://res.343.re/Share/cleardns/chinaglist.txt"
+    gfw_list: "https://res.343.re/Share/cleardns/gfwlist.txt"
+  # 拉取配置
+  download_timeout: 30s
+  max_retries: 3
+  retry_delay: 5s
+
+# 缓存配置
+cache:
+  enabled: true
+  capacity: 10000
+  # max_ttl: 1h
+  # min_ttl: 15m # 可选，最小TTL
+  custom_ttl: 1h # 可选，自定义TTL，优先级高于DNS响应中的TTL
+  max_memory: 256MB
+
+# 预刷新配置
+pre_refresh:
+  enabled: true
+  threshold: 0.2
+  interval: 15m
+  max_concurrency: 10
+  retry_count: 3
+
+# 上游DNS配置
+upstream:
+  # 引导DNS服务器，用于解析DOH/DOT服务器域名
+  bootstrap_dns: ["223.5.5.5:53", "119.29.29.29:53", "2400:3200::1:53", "2400:3200:baba::1:53"]
+  # 国内DNS服务器
+  domestic:
+    - addr: "223.5.5.5:53"
+      protocol: "plain"
+    - addr: "119.29.29.29:53"
+      protocol: "plain"
+  # 国外DNS服务器
+  foreign:
+    # Cloudflare DNS over TLS (IPv4)
+    - addr: "1.1.1.1:853"
+      protocol: "dot"
+      tls_config:
+        server_name: "dns.cloudflare.com"
+  # 查询超时时间
+  query_timeout: 5s
+  # 重试次数
+  retry_count: 1
+  # 重试延迟
+  retry_delay: 100ms
+
+# 安全配置
+security:
+  max_queries_per_second: 1000
+  max_response_size: 4096
+  enable_dnssec: true
+  enable_query_logging: false
+  trusted_upstreams: []
+  restricted_query_types: []
+
+# Goroutine池配置
+goroutinepool:
+  size: 100
+  queue_size: 1000
+
+# 调试配置
+debug:
+  enabled: true
+  log_level: "debug"
+  verbose_query: true
+  verbose_cache: true
+  verbose_diverter: true
+  verbose_upstream: true
