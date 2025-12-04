@@ -191,11 +191,13 @@ make build-all-arm
 PuraDNS 的配置文件位于 `/etc/puradns/puradns.yaml`，主要包含以下配置项：
 
 ### 服务器配置
+
 ```yaml
 listen_addr: "[::]:53"  # 监听地址和端口
 ```
 
 ### 资源文件配置
+
 ```yaml
 resource:
   china_ip_path: "/etc/puradns/rules/china-ip.txt"
@@ -209,22 +211,30 @@ resource:
 ```
 
 ### 缓存配置
+
 ```yaml
 cache:
   enabled: true
   capacity: 10000  # 缓存容量
-  custom_ttl: 1h  # 自定义TTL，优先级高于DNS响应中的TTL
-  max_memory: 256MB  # 最大内存使用量
+  custom_ttl: 1h  # 可选，自定义TTL，优先级高于DNS响应中的TTL
+  max_memory: 256MB
 ```
 
 ### 上游DNS配置
+
 ```yaml
 upstream:
-  bootstrap_dns: ["223.5.5.5:53", "119.29.29.29:53"]  # 引导DNS服务器
-  domestic:  # 国内DNS服务器
+  # 引导DNS服务器，用于解析DOH/DOT服务器域名
+  bootstrap_dns: ["223.5.5.5:53", "119.29.29.29:53", "2400:3200::1:53", "2400:3200:baba::1:53"]
+  # 国内DNS服务器
+  domestic:
     - addr: "223.5.5.5:53"
       protocol: "plain"
-  foreign:  # 国外DNS服务器
+    - addr: "119.29.29.29:53"
+      protocol: "plain"
+  # 国外DNS服务器
+  foreign:
+    # Cloudflare DNS over TLS (IPv4)
     - addr: "1.1.1.1:853"
       protocol: "dot"
       tls_config:
