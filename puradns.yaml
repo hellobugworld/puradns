@@ -48,11 +48,9 @@ upstream:
       protocol: "plain"
   # 国外DNS服务器
   foreign:
-    # Cloudflare DNS over TLS (IPv4)
+    # AliDNS over TLS (IPv4) using domain name
     - addr: "1.1.1.1:853"
       protocol: "dot"
-      tls_config:
-        server_name: "dns.cloudflare.com"
   # 查询超时时间
   query_timeout: 5s
   # 重试次数

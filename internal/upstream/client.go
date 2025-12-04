@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"net"
 	"net/http"
@@ -219,22 +220,33 @@ func (c *client) initDoHClient() error {
 	return nil
 }
 
+// parseTLSVersion parses TLS version string to tls.Version* and returns whether it was explicitly set
+func parseTLSVersion(version string) (uint16, bool) {
+	switch strings.ToLower(version) {
+	case "":
+		return 0, false // Not explicitly set, use default
+	case "1.2":
+		return tls.VersionTLS12, true
+	case "1.3":
+		return tls.VersionTLS13, true
+	default:
+		return 0, false // Invalid version, use default
+	}
+}
+
 // buildTLSConfig builds the TLS configuration
 func (c *client) buildTLSConfig() (*tls.Config, error) {
-	// Parse TLS versions
-	minVersion, err := parseTLSVersion(c.config.TLSConfig.MinVersion)
-	if err != nil {
-		return nil, err
-	}
+	log.Printf("[DEBUG] Building TLS config for protocol %s", c.config.Protocol)
+	log.Printf("[DEBUG] TLS config from yaml: %+v", c.config.TLSConfig)
 
-	maxVersion, err := parseTLSVersion(c.config.TLSConfig.MaxVersion)
-	if err != nil {
-		return nil, err
-	}
+	// Parse TLS versions
+	minVersion, minSet := parseTLSVersion(c.config.TLSConfig.MinVersion)
+	maxVersion, maxSet := parseTLSVersion(c.config.TLSConfig.MaxVersion)
 
 	// Parse cipher suites
 	cipherSuites, err := parseCipherSuites(c.config.TLSConfig.CipherSuites)
 	if err != nil {
+		log.Printf("[DEBUG] Failed to parse cipher suites: %v", err)
 		return nil, err
 	}
 
@@ -258,8 +270,6 @@ func (c *client) buildTLSConfig() (*tls.Config, error) {
 	cfg := &tls.Config{
 		ServerName:         serverName,
 		InsecureSkipVerify: c.config.TLSConfig.InsecureSkipVerify,
-		MinVersion:         minVersion,
-		MaxVersion:         maxVersion,
 		CipherSuites:       cipherSuites,
 		CurvePreferences: []tls.CurveID{
 			tls.X25519,
@@ -271,19 +281,20 @@ func (c *client) buildTLSConfig() (*tls.Config, error) {
 		Renegotiation:          tls.RenegotiateNever,
 	}
 
-	return cfg, nil
-}
-
-// parseTLSVersion parses TLS version string to tls.Version*
-func parseTLSVersion(version string) (uint16, error) {
-	switch strings.ToLower(version) {
-	case "", "1.2":
-		return tls.VersionTLS12, nil
-	case "1.3":
-		return tls.VersionTLS13, nil
-	default:
-		return 0, fmt.Errorf("unsupported TLS version: %s", version)
+	// Only set MinVersion if explicitly specified
+	if minSet {
+		cfg.MinVersion = minVersion
 	}
+
+	// Only set MaxVersion if explicitly specified
+	if maxSet {
+		cfg.MaxVersion = maxVersion
+	}
+
+	log.Printf("[DEBUG] Final TLS config: ServerName=%s, MinVersion=%d, MaxVersion=%d, InsecureSkipVerify=%t",
+		serverName, cfg.MinVersion, cfg.MaxVersion, c.config.TLSConfig.InsecureSkipVerify)
+
+	return cfg, nil
 }
 
 // parseCipherSuites parses cipher suite strings to tls.CipherSuite IDs
@@ -366,8 +377,99 @@ func (c *client) exchangePlain(ctx context.Context, m *dns.Msg) (*dns.Msg, error
 
 // exchangeDoT sends a DNS over TLS query
 func (c *client) exchangeDoT(ctx context.Context, m *dns.Msg) (*dns.Msg, error) {
-	resp, _, err := c.dotClient.ExchangeContext(ctx, m, c.config.Addr)
-	return resp, err
+	// Check if we need to resolve the DoT server address
+	addr := c.config.Addr
+
+	// Extract hostname from address (e.g., dns.google:853 -> dns.google)
+	hostname := addr
+	if idx := strings.LastIndex(hostname, ":"); idx != -1 {
+		hostname = hostname[:idx]
+	}
+
+	// If hostname is not an IP, resolve it using bootstrap resolvers
+	if net.ParseIP(hostname) == nil {
+		// Resolve the hostname to IP addresses using bootstrap resolvers
+		resolvedAddr, err := c.resolveHostname(ctx, hostname)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve DoT server address %s: %w", hostname, err)
+		}
+
+		// Replace hostname with resolved IP in the address
+		if idx := strings.LastIndex(addr, ":"); idx != -1 {
+			addr = resolvedAddr + addr[idx:]
+		} else {
+			addr = resolvedAddr
+		}
+	}
+
+	// Send the DoT query using the resolved address
+	log.Printf("[DEBUG] Sending DoT query to %s for %s", addr, m.Question[0].Name)
+	log.Printf("[DEBUG] TLS config: ServerName=%s, MinVersion=%d, MaxVersion=%d",
+		c.dotClient.TLSConfig.ServerName, c.dotClient.TLSConfig.MinVersion, c.dotClient.TLSConfig.MaxVersion)
+
+	resp, _, err := c.dotClient.ExchangeContext(ctx, m, addr)
+	if err != nil {
+		log.Printf("[ERROR] DoT query to %s failed: %v. This may be due to network restrictions, firewall settings, or the DoT server is not accessible from your network. Please check your network settings or try using plain DNS protocol instead.", addr, err)
+		return nil, fmt.Errorf("DoT query to %s failed: %w", addr, err)
+	}
+
+	log.Printf("[DEBUG] DoT query to %s succeeded, Rcode: %d", addr, resp.Rcode)
+	return resp, nil
+}
+
+// resolveHostname resolves a hostname to IP address using bootstrap resolvers
+func (c *client) resolveHostname(ctx context.Context, hostname string) (string, error) {
+	log.Printf("[DEBUG] Resolving hostname %s using bootstrap resolvers", hostname)
+	log.Printf("[DEBUG] Bootstrap resolvers count: %d", len(c.bootstrapResolvers))
+	log.Printf("[DEBUG] Bootstrap addresses: %v", c.config.Bootstrap)
+
+	// Create a DNS query for A record
+	m := &dns.Msg{
+		MsgHdr: dns.MsgHdr{
+			Id:               dns.Id(),
+			RecursionDesired: true,
+		},
+		Question: []dns.Question{
+			{
+				Name:   hostname + ".",
+				Qtype:  dns.TypeA,
+				Qclass: dns.ClassINET,
+			},
+		},
+	}
+
+	// Try all bootstrap resolvers
+	for i, bootstrapResolver := range c.bootstrapResolvers {
+		// Get bootstrap DNS address
+		bootstrapAddr := c.config.Bootstrap[i%len(c.config.Bootstrap)]
+		log.Printf("[DEBUG] Trying bootstrap resolver %d: %s", i, bootstrapAddr)
+
+		// Send query
+		resp, _, err := bootstrapResolver.ExchangeContext(ctx, m, bootstrapAddr)
+		if err != nil {
+			log.Printf("[DEBUG] Bootstrap resolver %d failed: %v", i, err)
+			continue
+		}
+
+		// Check if response is valid
+		if resp != nil {
+			log.Printf("[DEBUG] Bootstrap resolver %d returned Rcode: %d", i, resp.Rcode)
+			if resp.Rcode == dns.RcodeSuccess {
+				// Return first A record
+				for _, ans := range resp.Answer {
+					if a, ok := ans.(*dns.A); ok {
+						log.Printf("[DEBUG] Resolved %s to %s using bootstrap resolver %d", hostname, a.A.String(), i)
+						return a.A.String(), nil
+					}
+				}
+				log.Printf("[DEBUG] Bootstrap resolver %d returned no A records", i)
+			}
+		} else {
+			log.Printf("[DEBUG] Bootstrap resolver %d returned nil response", i)
+		}
+	}
+
+	return "", fmt.Errorf("failed to resolve %s using bootstrap resolvers", hostname)
 }
 
 // exchangeDoH sends a DNS over HTTPS query

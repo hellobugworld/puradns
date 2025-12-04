@@ -29,6 +29,12 @@ func main() {
 	// Convert upstream config to server format
 	domesticClients := make([]*upstream.Config, 0, len(cfg.UpstreamConfig.Domestic))
 	for _, srv := range cfg.UpstreamConfig.Domestic {
+		// Determine ServerName - prioritize TLSConfig.ServerName over SNI
+		serverName := srv.SNI
+		if srv.TLSConfig.ServerName != "" {
+			serverName = srv.TLSConfig.ServerName
+		}
+		
 		domesticClients = append(domesticClients, &upstream.Config{
 			Addr:      srv.Addr,
 			Protocol:  upstream.Protocol(srv.Protocol),
@@ -36,13 +42,23 @@ func main() {
 			Retry:     3,
 			Bootstrap: cfg.UpstreamConfig.BootstrapDNS,
 			TLSConfig: upstream.TLSConfig{
-				ServerName: srv.SNI,
+				ServerName:         serverName,
+				InsecureSkipVerify: srv.TLSConfig.InsecureSkipVerify,
+				CipherSuites:       srv.TLSConfig.CipherSuites,
+				MinVersion:         srv.TLSConfig.MinVersion,
+				MaxVersion:         srv.TLSConfig.MaxVersion,
 			},
 		})
 	}
 
 	foreignClients := make([]*upstream.Config, 0, len(cfg.UpstreamConfig.Foreign))
 	for _, srv := range cfg.UpstreamConfig.Foreign {
+		// Determine ServerName - prioritize TLSConfig.ServerName over SNI
+		serverName := srv.SNI
+		if srv.TLSConfig.ServerName != "" {
+			serverName = srv.TLSConfig.ServerName
+		}
+		
 		foreignClients = append(foreignClients, &upstream.Config{
 			Addr:      srv.Addr,
 			Protocol:  upstream.Protocol(srv.Protocol),
@@ -50,7 +66,11 @@ func main() {
 			Retry:     3,
 			Bootstrap: cfg.UpstreamConfig.BootstrapDNS,
 			TLSConfig: upstream.TLSConfig{
-				ServerName: srv.SNI,
+				ServerName:         serverName,
+				InsecureSkipVerify: srv.TLSConfig.InsecureSkipVerify,
+				CipherSuites:       srv.TLSConfig.CipherSuites,
+				MinVersion:         srv.TLSConfig.MinVersion,
+				MaxVersion:         srv.TLSConfig.MaxVersion,
 			},
 		})
 	}

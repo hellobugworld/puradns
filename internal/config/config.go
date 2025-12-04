@@ -81,10 +81,20 @@ type UpstreamConfig struct {
 
 // UpstreamServer 上游DNS服务器配置
 type UpstreamServer struct {
-	Addr      string `yaml:"addr"`
-	Protocol  string `yaml:"protocol"`
-	SNI       string `yaml:"sni,omitempty"`
-	ECHConfig string `yaml:"ech_config,omitempty"` // ECH配置，十六进制字符串
+	Addr      string        `yaml:"addr"`
+	Protocol  string        `yaml:"protocol"`
+	SNI       string        `yaml:"sni,omitempty"`
+	TLSConfig TLSConfig     `yaml:"tls_config,omitempty"`
+	ECHConfig string        `yaml:"ech_config,omitempty"` // ECH配置，十六进制字符串
+}
+
+// TLSConfig 表示TLS配置
+type TLSConfig struct {
+	InsecureSkipVerify bool     `yaml:"insecure_skip_verify,omitempty"`
+	ServerName         string   `yaml:"server_name,omitempty"`
+	CipherSuites       []string `yaml:"cipher_suites,omitempty"`
+	MinVersion         string   `yaml:"min_version,omitempty"`
+	MaxVersion         string   `yaml:"max_version,omitempty"`
 }
 
 // SecurityConfig 安全配置
