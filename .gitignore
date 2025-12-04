@@ -30,3 +30,7 @@ coverage.out
 # Logs
 logs/
 *.log
+
+# DEB package build files
+debian/
+puradns-arm64
