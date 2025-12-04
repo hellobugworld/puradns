@@ -327,7 +327,7 @@ make uninstall
 
 ## 许可证
 
-MIT License
+AGPLv3 License
 
 ## 贡献
 
