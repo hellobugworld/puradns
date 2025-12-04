@@ -1,0 +1,32 @@
+# Build output
+puradns
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Dependency directories
+vendor/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Testing
+coverage.out
+*.test
+
+# Configuration files (optional, depending on whether you want to include them)
+# puradns.yaml
+
+# Logs
+logs/
+*.log

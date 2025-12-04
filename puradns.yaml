@@ -71,14 +71,14 @@ security:
 
 # Goroutine池配置
 goroutinepool:
-  size: 100
-  queue_size: 1000
+  size: 150
+  queue_size: 1500
 
 # 调试配置
 debug:
-  enabled: true
-  log_level: "debug"
-  verbose_query: true
-  verbose_cache: true
-  verbose_diverter: true
-  verbose_upstream: true
+  enabled: false
+  log_level: "info"
+  verbose_query: false
+  verbose_cache: false
+  verbose_diverter: false
+  verbose_upstream: false

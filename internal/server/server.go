@@ -38,6 +38,13 @@ type Config struct {
 	GoroutineQueueSize int `yaml:"goroutinepool_queue_size"`
 }
 
+// 定义常量，替换硬编码字符串
+const (
+	GroupDomestic = "domestic"
+	GroupForeign  = "foreign"
+	GroupBoth     = "both"
+)
+
 // Server is the DNS server implementation
 type Server struct {
 	config           *Config
@@ -59,6 +66,8 @@ type Server struct {
 	// 对象池，用于内存优化
 	msgPool  sync.Pool // 复用dns.Msg对象
 	chanPool sync.Pool // 复用用于缓存查询的通道对象
+	// 并发控制
+	reqLimiter chan struct{} // 请求限流通道
 }
 
 // NewServer creates a new DNS server
@@ -70,9 +79,10 @@ func NewServer(config *Config) (*Server, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	s := &Server{
-		config: config,
-		ctx:    ctx,
-		cancel: cancel,
+		config:     config,
+		ctx:        ctx,
+		cancel:     cancel,
+		reqLimiter: make(chan struct{}, config.GoroutinePoolSize*2), // 最大并发请求数为goroutine池大小的2倍
 	}
 
 	if err := s.init(); err != nil {
@@ -167,12 +177,18 @@ func (s *Server) getChanFromPool() chan *dns.Msg {
 
 // putChanToPool 将通道对象放回对象池
 func (s *Server) putChanToPool(ch chan *dns.Msg) {
-	// 清空通道
-	select {
-	case <-ch:
-	default:
+	// 清空通道中的剩余数据
+	for {
+		select {
+		case <-ch:
+			// 继续清空
+		default:
+			// 通道已空，退出循环
+			goto done
+		}
 	}
-	// 将通道放回对象池
+done:
+	// 将通道放回对象池（不关闭通道，因为关闭的通道无法再次使用）
 	s.chanPool.Put(ch)
 }
 
@@ -366,13 +382,28 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	// 复制请求和响应写入器，避免并发问题
 	rCopy := r.Copy()
 
+	// 请求限流
+	select {
+	case s.reqLimiter <- struct{}{}:
+		// 成功获取令牌，继续处理
+	default:
+		// 限流，返回服务器繁忙
+		s.sendEmptyResponse(w, r, dns.RcodeServerFailure)
+		return
+	}
+
 	// 将请求处理提交到goroutine池
 	err := s.workerPool.Submit(func() {
+		defer func() {
+			// 释放令牌
+			<-s.reqLimiter
+		}()
 		s.handleDNSRequestInternal(w, rCopy)
 	})
 
 	if err != nil {
-		log.Printf("Failed to submit DNS request to worker pool: %v", err)
+		// 释放令牌
+		<-s.reqLimiter
 		s.sendEmptyResponse(w, r, dns.RcodeServerFailure)
 	}
 }
@@ -385,18 +416,15 @@ func (s *Server) handleDNSRequestInternal(w dns.ResponseWriter, r *dns.Msg) {
 
 	// Validate request
 	if r == nil || len(r.Question) == 0 {
-		log.Println("Invalid DNS request")
 		s.sendEmptyResponse(w, r, dns.RcodeFormatError)
 		return
 	}
 
 	q := r.Question[0]
-	log.Printf("Received DNS query: %s %s from %s", dns.TypeToString[q.Qtype], q.Name, w.RemoteAddr())
 
 	// Determine query group first to optimize cache lookup
 	group, err := s.determineQueryGroup(q.Name)
 	if err != nil {
-		log.Printf("Error determining query group: %v", err)
 		s.sendEmptyResponse(w, r, dns.RcodeServerFailure)
 		return
 	}
@@ -407,81 +435,42 @@ func (s *Server) handleDNSRequestInternal(w dns.ResponseWriter, r *dns.Msg) {
 	var found bool
 
 	// 根据分流决策决定缓存查询策略
-	if group == "domestic" {
+	if group == GroupDomestic {
 		// domestic组：只查询国内缓存
 		if cachedResp, found = s.cacheManager.GetDomestic().Get(cacheKey); found {
-			log.Printf("Cache hit for %s %s in domestic cache", dns.TypeToString[q.Qtype], q.Name)
 			s.sendResponse(w, r, cachedResp)
 			return
 		}
-		log.Printf("Cache miss for %s %s in domestic cache", dns.TypeToString[q.Qtype], q.Name)
-	} else if group == "foreign" {
+	} else if group == GroupForeign {
 		// foreign组：只查询国外缓存
 		if cachedResp, found = s.cacheManager.GetForeign().Get(cacheKey); found {
-			log.Printf("Cache hit for %s %s in foreign cache", dns.TypeToString[q.Qtype], q.Name)
 			s.sendResponse(w, r, cachedResp)
 			return
 		}
-		log.Printf("Cache miss for %s %s in foreign cache", dns.TypeToString[q.Qtype], q.Name)
 	} else {
-		// "both" group: 同时查询两个缓存，返回先命中的结果
-		domesticChan := s.getChanFromPool()
-		foreignChan := s.getChanFromPool()
-		defer func() {
-			// 关闭通道
-			close(domesticChan)
-			close(foreignChan)
-			// 将通道放回对象池
-			s.putChanToPool(domesticChan)
-			s.putChanToPool(foreignChan)
-		}()
-
-		// 并发查询两个缓存
-		go func() {
-			if resp, found := s.cacheManager.GetDomestic().Get(cacheKey); found {
-				domesticChan <- resp
-			}
-		}()
-
-		go func() {
-			if resp, found := s.cacheManager.GetForeign().Get(cacheKey); found {
-				foreignChan <- resp
-			}
-		}()
-
-		// 等待任一缓存返回结果
-		select {
-		case resp := <-domesticChan:
-			if resp != nil {
-				log.Printf("Cache hit for %s %s in domestic cache", dns.TypeToString[q.Qtype], q.Name)
-				s.sendResponse(w, r, resp)
-				return
-			}
-		case resp := <-foreignChan:
-			if resp != nil {
-				log.Printf("Cache hit for %s %s in foreign cache", dns.TypeToString[q.Qtype], q.Name)
-				s.sendResponse(w, r, resp)
-				return
-			}
+		// "both" group: 优先查询国内缓存，再查询国外缓存
+		// 国内缓存查询
+		if cachedResp, found = s.cacheManager.GetDomestic().Get(cacheKey); found {
+			s.sendResponse(w, r, cachedResp)
+			return
 		}
-
-		log.Printf("Cache miss for %s %s in both caches", dns.TypeToString[q.Qtype], q.Name)
+		// 国外缓存查询
+		if cachedResp, found = s.cacheManager.GetForeign().Get(cacheKey); found {
+			s.sendResponse(w, r, cachedResp)
+			return
+		}
 	}
 
 	// 所有缓存都未命中，向上游发起请求
-	log.Printf("All cache missed, querying upstream for %s %s", dns.TypeToString[q.Qtype], q.Name)
-
-	// Perform DNS query
 	resp, err := s.performQuery(ctx, r, group)
 	if err != nil {
-		log.Printf("DNS query failed: %v", err)
 		s.sendEmptyResponse(w, r, dns.RcodeServerFailure)
 		return
 	}
 
 	// Validate and cache response
 	if err := s.validateAndCacheResponse(q, resp, group); err != nil {
-		log.Printf("Error validating or caching response: %v", err)
+		// 缓存失败不影响响应返回
 	}
 
 	// Send response to client
@@ -502,13 +491,13 @@ func (s *Server) determineQueryGroup(domain string) (string, error) {
 	var group string
 	switch decision {
 	case diverter.DecisionDomestic:
-		group = "domestic"
+		group = GroupDomestic
 	case diverter.DecisionForeign:
-		group = "foreign"
+		group = GroupForeign
 	case diverter.DecisionBoth:
-		group = "both"
+		group = GroupBoth
 	default:
-		group = "both"
+		group = GroupBoth
 	}
 
 	log.Printf("Diverter decision for %s: %s", domain, group)
@@ -521,9 +510,9 @@ func (s *Server) performQuery(ctx context.Context, r *dns.Msg, group string) (*d
 
 	// Select upstream pool based on group
 	switch group {
-	case "domestic":
+	case GroupDomestic:
 		pool = s.domesticPool
-	case "foreign":
+	case GroupForeign:
 		pool = s.foreignPool
 	default:
 		// For unknown groups, query both pools and return the best result
@@ -538,138 +527,75 @@ func (s *Server) performQuery(ctx context.Context, r *dns.Msg, group string) (*d
 	// Set DO bit for DNSSEC support
 	r.SetEdns0(4096, true)
 
-	// Query single pool
-	return pool.Exchange(ctx, r)
+	// Create independent context for single pool queries to avoid main context timeout issues
+	queryCtx, queryCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer queryCancel()
+
+	// Use a buffered channel to avoid goroutine leak
+	resultChan := make(chan struct {
+		resp *dns.Msg
+		err  error
+	}, 1)
+
+	// Perform DNS query in a separate goroutine to avoid blocking
+	go func() {
+		resp, err := pool.Exchange(queryCtx, r)
+		resultChan <- struct {
+			resp *dns.Msg
+			err  error
+		}{resp, err}
+	}()
+
+	// Wait for result or context cancellation
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-queryCtx.Done():
+		return nil, queryCtx.Err()
+	case result := <-resultChan:
+		return result.resp, result.err
+	}
 }
 
 // queryBothPools queries both domestic and foreign pools and returns the best result
 func (s *Server) queryBothPools(ctx context.Context, r *dns.Msg) (*dns.Msg, error) {
-	// Create channels for results
-	domesticChan := make(chan *dns.Msg, 1)
-	foreignChan := make(chan *dns.Msg, 1)
-	errorChan := make(chan error, 2)
-	queryCount := 0
-
 	// Set DO bit for DNSSEC support
 	r.SetEdns0(4096, true)
 
-	// Query domestic pool if available
+	// 为国内DNS查询创建独立的上下文，避免被主上下文超时影响
+	domesticCtx, domesticCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer domesticCancel()
+
+	// 优先查询国内DNS
 	if s.domesticPool != nil {
-		queryCount++
-		go func() {
-			// Create a copy of the message for each query
-			msgCopy := r.Copy()
-			resp, err := s.domesticPool.Exchange(ctx, msgCopy)
-			if err != nil {
-				errorChan <- fmt.Errorf("domestic query failed: %w", err)
-				return
+		msgCopy := r.Copy()
+		resp, err := s.domesticPool.Exchange(domesticCtx, msgCopy)
+		if err == nil && resp != nil {
+			// 国内DNS查询成功，验证结果
+			if resp.Rcode == dns.RcodeSuccess || resp.Rcode == dns.RcodeNameError {
+				// 结果有效，直接返回（包括NXDOMAIN）
+				return resp, nil
 			}
-			domesticChan <- resp
-		}()
+		}
 	}
 
-	// Query foreign pool if available
+	// 国内DNS查询失败或结果无效，查询国外DNS
 	if s.foreignPool != nil {
-		queryCount++
-		go func() {
-			// Create a copy of the message for each query
-			msgCopy := r.Copy()
-			resp, err := s.foreignPool.Exchange(ctx, msgCopy)
-			if err != nil {
-				errorChan <- fmt.Errorf("foreign query failed: %w", err)
-				return
-			}
-			foreignChan <- resp
-		}()
-	}
-
-	// Wait for results
-	var domesticResp, foreignResp *dns.Msg
-	var errors []error
-
-	for i := 0; i < queryCount; i++ {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case resp := <-domesticChan:
-			domesticResp = resp
-		case resp := <-foreignChan:
-			foreignResp = resp
-		case err := <-errorChan:
-			errors = append(errors, err)
+		msgCopy := r.Copy()
+		resp, err := s.foreignPool.Exchange(ctx, msgCopy)
+		if err == nil && resp != nil {
+			// 国外DNS查询成功，返回结果（包括NXDOMAIN）
+			return resp, nil
 		}
 	}
 
-	// Process results
-	if domesticResp != nil && foreignResp != nil {
-		// Both pools returned results, validate and select the best one
-		return s.selectBestResult(domesticResp, foreignResp)
-	} else if domesticResp != nil {
-		// Only domestic pool returned result
-		return domesticResp, nil
-	} else if foreignResp != nil {
-		// Only foreign pool returned result
-		return foreignResp, nil
-	} else {
-		// Both pools failed or no pools available
-		if len(errors) > 0 {
-			return nil, errors[0]
-		}
-		return nil, fmt.Errorf("no upstream pools available")
-	}
+	// 所有DNS查询都失败
+	return nil, fmt.Errorf("all upstream DNS queries failed")
 }
 
+// 注意：以下函数已被queryBothPools的新实现替代，不再使用
 // selectBestResult selects the best result between domestic and foreign responses
-func (s *Server) selectBestResult(domesticResp, foreignResp *dns.Msg) (*dns.Msg, error) {
-	// If domestic response is successful and contains valid IPs, use it
-	if domesticResp.Rcode == dns.RcodeSuccess && s.isValidDomesticResponse(domesticResp) {
-		return domesticResp, nil
-	}
-
-	// Otherwise use foreign response
-	return foreignResp, nil
-}
-
 // isValidDomesticResponse checks if the domestic response is valid (not polluted)
-func (s *Server) isValidDomesticResponse(resp *dns.Msg) bool {
-	// Basic validation for now
-	if resp == nil {
-		return false
-	}
-
-	// Check if response is successful
-	if resp.Rcode != dns.RcodeSuccess {
-		return false
-	}
-
-	// Check if response contains at least one answer
-	if len(resp.Answer) == 0 {
-		return false
-	}
-
-	// Validate each IP in the response
-	for _, rr := range resp.Answer {
-		switch record := rr.(type) {
-		case *dns.A:
-			// Check IPv4 address
-			if !s.diverter.IsChinaIP(record.A) {
-				log.Printf("Invalid domestic response: IPv4 %s is not in China IP range", record.A)
-				return false
-			}
-		case *dns.AAAA:
-			// Check IPv6 address
-			if !s.diverter.IsChinaIP(record.AAAA) {
-				log.Printf("Invalid domestic response: IPv6 %s is not in China IP range", record.AAAA)
-				return false
-			}
-		// For other record types, no IP validation needed
-		default:
-			continue
-		}
-	}
-
-	return true
-}
 
 // validateAndCacheResponse validates the response and caches it
 func (s *Server) validateAndCacheResponse(q dns.Question, resp *dns.Msg, group string) error {
@@ -677,17 +603,17 @@ func (s *Server) validateAndCacheResponse(q dns.Question, resp *dns.Msg, group s
 		return errors.New("nil response")
 	}
 
-	// Only cache successful responses
-	if resp.Rcode != dns.RcodeSuccess {
+	// Cache successful responses and NXDOMAIN responses
+	if resp.Rcode != dns.RcodeSuccess && resp.Rcode != dns.RcodeNameError {
 		return nil
 	}
 
 	// Cache the response in the appropriate cache
 	cacheKey := s.getCacheKey(q)
 	switch group {
-	case "domestic":
+	case GroupDomestic:
 		s.cacheManager.GetDomestic().Set(cacheKey, resp)
-	case "foreign":
+	case GroupForeign:
 		s.cacheManager.GetForeign().Set(cacheKey, resp)
 	default:
 		// Cache in both caches for "both" group
@@ -719,16 +645,17 @@ func (s *Server) sendResponse(w dns.ResponseWriter, r, resp *dns.Msg) {
 
 // sendEmptyResponse sends an empty response with the given RCODE
 func (s *Server) sendEmptyResponse(w dns.ResponseWriter, r *dns.Msg, rcode int) {
-	resp := &dns.Msg{
-		MsgHdr: dns.MsgHdr{
-			Id:                 r.MsgHdr.Id,
-			Opcode:             r.MsgHdr.Opcode,
-			Rcode:              rcode,
-			RecursionDesired:   r.MsgHdr.RecursionDesired,
-			RecursionAvailable: true,
-		},
-		Question: r.Question,
-	}
+	// 从对象池获取DNS消息对象
+	resp := s.getMsgFromPool()
+	defer s.putMsgToPool(resp) // 使用完毕后放回对象池
+
+	// 设置响应头
+	resp.MsgHdr.Id = r.MsgHdr.Id
+	resp.MsgHdr.Opcode = r.MsgHdr.Opcode
+	resp.MsgHdr.Rcode = rcode
+	resp.MsgHdr.RecursionDesired = r.MsgHdr.RecursionDesired
+	resp.MsgHdr.RecursionAvailable = true
+	resp.Question = r.Question
 
 	if err := w.WriteMsg(resp); err != nil {
 		log.Printf("Error sending empty DNS response: %v", err)
@@ -765,10 +692,10 @@ func (s *Server) performPreRefresh() {
 	// Combine and deduplicate keys
 	expiringKeys := make(map[string]string)
 	for _, key := range domesticExpiringKeys {
-		expiringKeys[key] = "domestic"
+		expiringKeys[key] = GroupDomestic
 	}
 	for _, key := range foreignExpiringKeys {
-		expiringKeys[key] = "foreign"
+		expiringKeys[key] = GroupForeign
 	}
 
 	if len(expiringKeys) == 0 {
@@ -865,9 +792,9 @@ func (s *Server) preRefreshKey(key, group string) {
 	// Determine which pool to use
 	var pool *upstream.Pool
 	switch group {
-	case "domestic":
+	case GroupDomestic:
 		pool = s.domesticPool
-	case "foreign":
+	case GroupForeign:
 		pool = s.foreignPool
 	default:
 		log.Printf("Unknown group %s for key %s", group, key)
@@ -887,16 +814,16 @@ func (s *Server) preRefreshKey(key, group string) {
 		resp, err2 = pool.Exchange(ctx, m)
 		cancel()
 
-		if err2 == nil && resp != nil && resp.Rcode == dns.RcodeSuccess {
+		if err2 == nil && resp != nil && (resp.Rcode == dns.RcodeSuccess || resp.Rcode == dns.RcodeNameError) {
 			// Cache the new response
 			cacheKey := s.getCacheKey(m.Question[0])
 			switch group {
-			case "domestic":
+			case GroupDomestic:
 				s.cacheManager.GetDomestic().Set(cacheKey, resp)
-			case "foreign":
+			case GroupForeign:
 				s.cacheManager.GetForeign().Set(cacheKey, resp)
 			}
-			log.Printf("Successfully pre-refreshed %s %s", dns.TypeToString[m.Question[0].Qtype], domain)
+			log.Printf("Successfully pre-refreshed %s %s, Rcode: %d", dns.TypeToString[m.Question[0].Qtype], domain, resp.Rcode)
 			return
 		}
 

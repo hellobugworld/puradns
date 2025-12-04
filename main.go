@@ -114,6 +114,8 @@ func main() {
 			MaxRetries:      cfg.ResourceConfig.MaxRetries,
 			RetryDelay:      cfg.ResourceConfig.RetryDelay,
 		},
+		GoroutinePoolSize:  150,
+		GoroutineQueueSize: 1500,
 	})
 	if err != nil {
 		log.Fatalf("Failed to create server: %v", err)

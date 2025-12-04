@@ -517,9 +517,23 @@ func (p *Pool) Exchange(ctx context.Context, m *dns.Msg) (*dns.Msg, error) {
 		return nil, errors.New("no clients in pool")
 	}
 
-	// Randomly select a client to distribute load
-	client := clients[rand.Intn(len(clients))]
-	return client.Exchange(ctx, m)
+	// Shuffle clients to distribute load
+	rand.Shuffle(len(clients), func(i, j int) {
+		clients[i], clients[j] = clients[j], clients[i]
+	})
+
+	var lastErr error
+	// Try all clients until one succeeds
+	for _, client := range clients {
+		resp, err := client.Exchange(ctx, m)
+		if err == nil && resp != nil && resp.Rcode != dns.RcodeServerFailure {
+			return resp, nil
+		}
+		lastErr = err
+	}
+
+	// All clients failed
+	return nil, lastErr
 }
 
 // Close closes the pool and all clients
