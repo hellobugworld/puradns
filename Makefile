@@ -115,21 +115,5 @@ uninstall:
 
 .PHONY: all build install clean uninstall
 
-# Build DEB package for ARM64
-build-deb-arm64:
-	@echo "Building DEB package for ARM64..."
-	mkdir -p /tmp/debian/DEBIAN /tmp/debian/usr/local/bin /tmp/debian/etc/puradns/rules /tmp/debian/etc/systemd/system
-	cat debian/DEBIAN/control > /tmp/debian/DEBIAN/control
-	cat debian/DEBIAN/postinst > /tmp/debian/DEBIAN/postinst
-	cat debian/DEBIAN/prerm > /tmp/debian/DEBIAN/prerm
-	cat debian/DEBIAN/postrm > /tmp/debian/DEBIAN/postrm
-	chmod 755 /tmp/debian/DEBIAN/postinst /tmp/debian/DEBIAN/prerm /tmp/debian/DEBIAN/postrm
-	cp puradns-arm64 /tmp/debian/usr/local/bin/puradns
-	cp puradns.yaml /tmp/debian/etc/puradns/puradns.yaml
-	cp /home/china-ip.txt /home/chinalist.txt /home/gfwlist.txt /tmp/debian/etc/puradns/rules/
-	cp debian/puradns.service /tmp/debian/etc/systemd/system/puradns.service
-	dpkg-deb --build /tmp/debian /tmp/puradns-arm64.deb
-	@echo "DEB package built successfully: /tmp/puradns-arm64.deb"
-	@echo "To install: dpkg -i /tmp/puradns-arm64.deb"
-	@echo "To uninstall: dpkg -r puradns"
+
 
