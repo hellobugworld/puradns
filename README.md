@@ -342,6 +342,7 @@ goroutinepool:
 - `domestic`: 国内DNS服务器配置列表
 - `foreign`: 国外DNS服务器配置列表
 - `query_timeout`: 上游查询超时时间
+- `retry_count`: 上游查询重试次数
 - `health_check`: 健康检查间隔
 
 每个上游服务器支持以下协议：

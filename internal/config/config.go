@@ -75,15 +75,19 @@ type PreRefreshConfig struct {
 	Interval       time.Duration `yaml:"interval"`
 	MaxConcurrency int           `yaml:"max_concurrency"`
 	RetryCount     int           `yaml:"retry_count"`
+	MaxKeysPerRun  int           `yaml:"max_keys_per_run,omitempty"` // 每次预刷新处理的最大键数量
 }
 
 // UpstreamConfig 上游DNS配置
 type UpstreamConfig struct {
-	Domestic     []UpstreamServer `yaml:"domestic"`
-	Foreign      []UpstreamServer `yaml:"foreign"`
-	Bootstrap    []string         `yaml:"bootstrap"`
-	QueryTimeout time.Duration    `yaml:"query_timeout"`
-	HealthCheck  time.Duration    `yaml:"health_check"`
+	Domestic            []UpstreamServer `yaml:"domestic"`
+	Foreign             []UpstreamServer `yaml:"foreign"`
+	Bootstrap           []string         `yaml:"bootstrap"`
+	QueryTimeout        time.Duration    `yaml:"query_timeout"`
+	RetryCount          int              `yaml:"retry_count,omitempty"` // 上游查询重试次数
+	HealthCheck         time.Duration    `yaml:"health_check"`
+	HTTP3AttemptTimeout time.Duration    `yaml:"http3_attempt_timeout,omitempty"` // HTTP/3 尝试超时时间
+	HTTP3RetryInterval  time.Duration    `yaml:"http3_retry_interval,omitempty"`  // HTTP/3 失败后的重试间隔
 }
 
 // UpstreamServer 上游DNS服务器配置
@@ -140,6 +144,24 @@ func (c *Config) setDefaults() {
 	// 设置健康检查默认值为30秒
 	if c.UpstreamConfig.HealthCheck == 0 {
 		c.UpstreamConfig.HealthCheck = 30 * time.Second
+	}
+
+	// 设置上游查询重试次数默认值
+	if c.UpstreamConfig.RetryCount <= 0 {
+		c.UpstreamConfig.RetryCount = 3 // 默认重试3次
+	}
+
+	// 设置HTTP/3相关默认值
+	if c.UpstreamConfig.HTTP3AttemptTimeout == 0 {
+		c.UpstreamConfig.HTTP3AttemptTimeout = 2 * time.Second
+	}
+	if c.UpstreamConfig.HTTP3RetryInterval == 0 {
+		c.UpstreamConfig.HTTP3RetryInterval = 30 * time.Second
+	}
+
+	// 设置预刷新相关默认值
+	if c.PreRefreshConfig.MaxKeysPerRun <= 0 {
+		c.PreRefreshConfig.MaxKeysPerRun = 1000 // 默认每次处理1000个键
 	}
 
 	// 设置Goroutine池默认值

@@ -33,11 +33,12 @@ const (
 
 // fallbackRoundTripper implements a RoundTripper that tries HTTP/3 first, then falls back to HTTP/2/1.1
 type fallbackRoundTripper struct {
-	http3Transport  *http3.RoundTripper
-	http2Transport  *http.Transport
-	http3FailedAt   time.Time
-	retryHTTP3After time.Duration
-	mutex           sync.RWMutex
+	http3Transport      *http3.RoundTripper
+	http2Transport      *http.Transport
+	http3FailedAt       time.Time
+	retryHTTP3After     time.Duration
+	http3AttemptTimeout time.Duration // HTTP/3 尝试超时时间
+	mutex               sync.RWMutex
 }
 
 // RoundTrip implements the RoundTripper interface
@@ -46,7 +47,11 @@ func (rt *fallbackRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 	shouldSkipHTTP3 := rt.shouldSkipHTTP3()
 	if !shouldSkipHTTP3 {
 		// First try HTTP/3 with a shorter timeout to allow fallback
-		http3Ctx, http3Cancel := context.WithTimeout(req.Context(), 2*time.Second)
+		http3Timeout := rt.http3AttemptTimeout
+		if http3Timeout == 0 {
+			http3Timeout = 2 * time.Second // Default value if not set
+		}
+		http3Ctx, http3Cancel := context.WithTimeout(req.Context(), http3Timeout)
 		defer http3Cancel()
 
 		// Clone request with shorter timeout context
@@ -116,13 +121,15 @@ func (rt *fallbackRoundTripper) CloseIdleConnections() {
 
 // Config represents the upstream DNS client configuration
 type Config struct {
-	Addr         string        `yaml:"addr"`
-	Protocol     Protocol      `yaml:"protocol"`
-	Timeout      time.Duration `yaml:"timeout"`
-	Retry        int           `yaml:"retry"`
-	Bootstrap    []string      `yaml:"bootstrap"`
-	TLSConfig    TLSConfig     `yaml:"tls_config"`
-	HTTP3Support bool          `yaml:"http3"` // Whether the server supports HTTP/3
+	Addr                string        `yaml:"addr"`
+	Protocol            Protocol      `yaml:"protocol"`
+	Timeout             time.Duration `yaml:"timeout"`
+	Retry               int           `yaml:"retry"`
+	Bootstrap           []string      `yaml:"bootstrap"`
+	TLSConfig           TLSConfig     `yaml:"tls_config"`
+	HTTP3Support        bool          `yaml:"http3"`                           // Whether the server supports HTTP/3
+	HTTP3AttemptTimeout time.Duration `yaml:"http3_attempt_timeout,omitempty"` // HTTP/3 尝试超时时间
+	HTTP3RetryInterval  time.Duration `yaml:"http3_retry_interval,omitempty"`  // HTTP/3 失败后的重试间隔
 }
 
 // TLSConfig represents the TLS configuration for DoT and DoH
@@ -300,8 +307,10 @@ func (c *client) initDoHClient() error {
 
 		// Create fallback transport that tries HTTP/3 first, then falls back to HTTP/2/1.1
 		fallbackTransport := &fallbackRoundTripper{
-			http3Transport: http3Transport,
-			http2Transport: http2Transport,
+			http3Transport:      http3Transport,
+			http2Transport:      http2Transport,
+			retryHTTP3After:     c.config.HTTP3RetryInterval,
+			http3AttemptTimeout: c.config.HTTP3AttemptTimeout,
 		}
 
 		// Create HTTP client with fallback transport

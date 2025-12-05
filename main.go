@@ -34,12 +34,14 @@ func main() {
 		}
 
 		domesticClients = append(domesticClients, &upstream.Config{
-			Addr:         srv.Addr,
-			Protocol:     upstream.Protocol(srv.Protocol),
-			Timeout:      cfg.UpstreamConfig.QueryTimeout,
-			Retry:        3,
-			Bootstrap:    cfg.UpstreamConfig.Bootstrap,
-			HTTP3Support: srv.HTTP3Support,
+			Addr:                srv.Addr,
+			Protocol:            upstream.Protocol(srv.Protocol),
+			Timeout:             cfg.UpstreamConfig.QueryTimeout,
+			Retry:               cfg.UpstreamConfig.RetryCount,
+			Bootstrap:           cfg.UpstreamConfig.Bootstrap,
+			HTTP3Support:        srv.HTTP3Support,
+			HTTP3AttemptTimeout: cfg.UpstreamConfig.HTTP3AttemptTimeout,
+			HTTP3RetryInterval:  cfg.UpstreamConfig.HTTP3RetryInterval,
 			TLSConfig: upstream.TLSConfig{
 				ServerName:         serverName,
 				InsecureSkipVerify: srv.TLSConfig.InsecureSkipVerify,
@@ -58,12 +60,14 @@ func main() {
 		}
 
 		foreignClients = append(foreignClients, &upstream.Config{
-			Addr:         srv.Addr,
-			Protocol:     upstream.Protocol(srv.Protocol),
-			Timeout:      cfg.UpstreamConfig.QueryTimeout,
-			Retry:        3,
-			Bootstrap:    cfg.UpstreamConfig.Bootstrap,
-			HTTP3Support: srv.HTTP3Support,
+			Addr:                srv.Addr,
+			Protocol:            upstream.Protocol(srv.Protocol),
+			Timeout:             cfg.UpstreamConfig.QueryTimeout,
+			Retry:               cfg.UpstreamConfig.RetryCount,
+			Bootstrap:           cfg.UpstreamConfig.Bootstrap,
+			HTTP3Support:        srv.HTTP3Support,
+			HTTP3AttemptTimeout: cfg.UpstreamConfig.HTTP3AttemptTimeout,
+			HTTP3RetryInterval:  cfg.UpstreamConfig.HTTP3RetryInterval,
 			TLSConfig: upstream.TLSConfig{
 				ServerName:         serverName,
 				InsecureSkipVerify: srv.TLSConfig.InsecureSkipVerify,
@@ -115,6 +119,7 @@ func main() {
 		PreRefreshInterval:       cfg.PreRefreshConfig.Interval,
 		PreRefreshMaxConcurrency: cfg.PreRefreshConfig.MaxConcurrency,
 		PreRefreshRetryCount:     cfg.PreRefreshConfig.RetryCount,
+		PreRefreshMaxKeysPerRun:  cfg.PreRefreshConfig.MaxKeysPerRun,
 		ResourceConfig: resources.ResourceConfig{
 			ChinaIPPath:    cfg.ResourceConfig.ChinaIPPath,
 			ChinaListPath:  cfg.ResourceConfig.ChinaListPath,

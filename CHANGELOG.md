@@ -8,11 +8,17 @@ All notable changes to this project will be documented in this file.
 - 支持从配置文件读取Goroutine池配置（大小和队列大小）
 - 为配置文件添加了用户友好的中文注释
 - 实现了HTTP/3自动回退机制，提高DoH连接可靠性
+- 添加了预刷新最大键数量配置，允许用户自定义每次预刷新处理的最大键数量
+- 添加了HTTP/3相关配置，允许用户自定义HTTP/3尝试超时和重试间隔
+- 添加了上游查询重试次数配置，允许用户自定义上游查询失败后的重试次数
 
 ### Changed
 - 重构了服务器缓存查询逻辑，将if-else结构替换为更清晰的switch语句
 - 优化了配置文件注释，使用更通俗易懂的语言
 - 改进了TLS密码套件配置，使用安全默认值
+- 将`bootstrap_dns`参数名简化为`bootstrap`
+- 移除了`puradns.yaml`文件的git版本控制
+- 将硬编码的上游查询重试次数改为使用配置值
 
 ### Fixed
 - 修复了`parseCipherSuites`函数中未使用的`suites`参数

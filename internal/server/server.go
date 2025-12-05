@@ -32,6 +32,7 @@ type Config struct {
 	PreRefreshInterval       time.Duration            `yaml:"pre_refresh_interval"`
 	PreRefreshMaxConcurrency int                      `yaml:"pre_refresh_max_concurrency"`
 	PreRefreshRetryCount     int                      `yaml:"pre_refresh_retry_count"`
+	PreRefreshMaxKeysPerRun  int                      `yaml:"pre_refresh_max_keys_per_run"` // 每次预刷新处理的最大键数量
 	ResourceConfig           resources.ResourceConfig `yaml:"resource_config"`
 	// GoroutinePool配置
 	GoroutinePoolSize  int `yaml:"goroutinepool_size"`
@@ -682,7 +683,10 @@ func (s *Server) performPreRefresh() {
 	}
 
 	// Limit the number of keys processed per run to avoid blocking
-	maxKeysPerRun := 1000
+	maxKeysPerRun := s.config.PreRefreshMaxKeysPerRun
+	if maxKeysPerRun <= 0 {
+		maxKeysPerRun = 1000 // 默认值
+	}
 	if len(expiringKeys) > maxKeysPerRun {
 		// Only process the first maxKeysPerRun keys
 		temp := make(map[string]string, maxKeysPerRun)
