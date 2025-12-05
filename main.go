@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/hellobugworld/puradns/internal/cache"
 	"github.com/hellobugworld/puradns/internal/config"
@@ -29,18 +28,18 @@ func main() {
 	// Convert upstream config to server format
 	domesticClients := make([]*upstream.Config, 0, len(cfg.UpstreamConfig.Domestic))
 	for _, srv := range cfg.UpstreamConfig.Domestic {
-		// Determine ServerName - prioritize TLSConfig.ServerName over SNI
 		serverName := srv.SNI
 		if srv.TLSConfig.ServerName != "" {
 			serverName = srv.TLSConfig.ServerName
 		}
-		
+
 		domesticClients = append(domesticClients, &upstream.Config{
-			Addr:      srv.Addr,
-			Protocol:  upstream.Protocol(srv.Protocol),
-			Timeout:   cfg.UpstreamConfig.QueryTimeout,
-			Retry:     3,
-			Bootstrap: cfg.UpstreamConfig.BootstrapDNS,
+			Addr:         srv.Addr,
+			Protocol:     upstream.Protocol(srv.Protocol),
+			Timeout:      cfg.UpstreamConfig.QueryTimeout,
+			Retry:        3,
+			Bootstrap:    cfg.UpstreamConfig.Bootstrap,
+			HTTP3Support: srv.HTTP3Support,
 			TLSConfig: upstream.TLSConfig{
 				ServerName:         serverName,
 				InsecureSkipVerify: srv.TLSConfig.InsecureSkipVerify,
@@ -53,18 +52,18 @@ func main() {
 
 	foreignClients := make([]*upstream.Config, 0, len(cfg.UpstreamConfig.Foreign))
 	for _, srv := range cfg.UpstreamConfig.Foreign {
-		// Determine ServerName - prioritize TLSConfig.ServerName over SNI
 		serverName := srv.SNI
 		if srv.TLSConfig.ServerName != "" {
 			serverName = srv.TLSConfig.ServerName
 		}
-		
+
 		foreignClients = append(foreignClients, &upstream.Config{
-			Addr:      srv.Addr,
-			Protocol:  upstream.Protocol(srv.Protocol),
-			Timeout:   cfg.UpstreamConfig.QueryTimeout,
-			Retry:     3,
-			Bootstrap: cfg.UpstreamConfig.BootstrapDNS,
+			Addr:         srv.Addr,
+			Protocol:     upstream.Protocol(srv.Protocol),
+			Timeout:      cfg.UpstreamConfig.QueryTimeout,
+			Retry:        3,
+			Bootstrap:    cfg.UpstreamConfig.Bootstrap,
+			HTTP3Support: srv.HTTP3Support,
 			TLSConfig: upstream.TLSConfig{
 				ServerName:         serverName,
 				InsecureSkipVerify: srv.TLSConfig.InsecureSkipVerify,
@@ -87,26 +86,26 @@ func main() {
 		ListenAddrTCP: cfg.ListenAddr,
 		UpstreamDomestic: &upstream.PoolConfig{
 			Clients:     domesticClients,
-			HealthCheck: 30 * time.Second,
+			HealthCheck: cfg.UpstreamConfig.HealthCheck,
 		},
 		UpstreamForeign: &upstream.PoolConfig{
 			Clients:     foreignClients,
-			HealthCheck: 30 * time.Second,
+			HealthCheck: cfg.UpstreamConfig.HealthCheck,
 		},
 		CacheConfig: &cache.GroupCacheConfig{
 			DomesticConfig: cache.Config{
-				Capacity:   cfg.CacheConfig.Capacity,
-				MaxTTL:     cfg.CacheConfig.MaxTTL,
-				MinTTL:     cfg.CacheConfig.MinTTL,
-				CustomTTL:  cfg.CacheConfig.CustomTTL,
-				MaxMemory:  maxMemory,
+				Capacity:  cfg.CacheConfig.Capacity,
+				MaxTTL:    cfg.CacheConfig.MaxTTL,
+				MinTTL:    cfg.CacheConfig.MinTTL,
+				CustomTTL: cfg.CacheConfig.CustomTTL,
+				MaxMemory: maxMemory,
 			},
 			ForeignConfig: cache.Config{
-				Capacity:   cfg.CacheConfig.Capacity,
-				MaxTTL:     cfg.CacheConfig.MaxTTL,
-				MinTTL:     cfg.CacheConfig.MinTTL,
-				CustomTTL:  cfg.CacheConfig.CustomTTL,
-				MaxMemory:  maxMemory,
+				Capacity:  cfg.CacheConfig.Capacity,
+				MaxTTL:    cfg.CacheConfig.MaxTTL,
+				MinTTL:    cfg.CacheConfig.MinTTL,
+				CustomTTL: cfg.CacheConfig.CustomTTL,
+				MaxMemory: maxMemory,
 			},
 		},
 		QueryTimeout:             cfg.UpstreamConfig.QueryTimeout,
@@ -117,10 +116,10 @@ func main() {
 		PreRefreshMaxConcurrency: cfg.PreRefreshConfig.MaxConcurrency,
 		PreRefreshRetryCount:     cfg.PreRefreshConfig.RetryCount,
 		ResourceConfig: resources.ResourceConfig{
-			ChinaIPPath:     cfg.ResourceConfig.ChinaIPPath,
-			ChinaListPath:   cfg.ResourceConfig.ChinaListPath,
-			GFWListPath:     cfg.ResourceConfig.GFWListPath,
-			UpdateInterval:  cfg.ResourceConfig.UpdateInterval,
+			ChinaIPPath:    cfg.ResourceConfig.ChinaIPPath,
+			ChinaListPath:  cfg.ResourceConfig.ChinaListPath,
+			GFWListPath:    cfg.ResourceConfig.GFWListPath,
+			UpdateInterval: cfg.ResourceConfig.UpdateInterval,
 			URLs: struct {
 				ChinaIP   string
 				ChinaList string
@@ -134,8 +133,8 @@ func main() {
 			MaxRetries:      cfg.ResourceConfig.MaxRetries,
 			RetryDelay:      cfg.ResourceConfig.RetryDelay,
 		},
-		GoroutinePoolSize:  150,
-		GoroutineQueueSize: 1500,
+		GoroutinePoolSize:  cfg.GoroutinePoolConfig.Size,
+		GoroutineQueueSize: cfg.GoroutinePoolConfig.QueueSize,
 	})
 	if err != nil {
 		log.Fatalf("Failed to create server: %v", err)

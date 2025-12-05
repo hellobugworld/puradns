@@ -9,6 +9,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// GoroutinePoolConfig Goroutine池配置
+type GoroutinePoolConfig struct {
+	Size      int `yaml:"size"`
+	QueueSize int `yaml:"queue_size"`
+}
+
 // Config 表示PuraDNS的完整配置
 type Config struct {
 	// 服务器配置
@@ -29,7 +35,8 @@ type Config struct {
 	// 安全配置
 	SecurityConfig SecurityConfig `yaml:"security"`
 
-	
+	// Goroutine池配置
+	GoroutinePoolConfig GoroutinePoolConfig `yaml:"goroutinepool"`
 }
 
 // ResourceURLs 资源文件URL配置
@@ -53,12 +60,12 @@ type ResourceConfig struct {
 
 // CacheConfig 缓存配置
 type CacheConfig struct {
-	Enabled    bool          `yaml:"enabled"`
-	Capacity   int           `yaml:"capacity"`
-	MaxTTL     time.Duration `yaml:"max_ttl"`
-	MinTTL     time.Duration `yaml:"min_ttl,omitempty"` // 最小TTL，可选
-	CustomTTL  time.Duration `yaml:"custom_ttl,omitempty"` // 自定义TTL，可选，优先级高于DNS响应中的TTL
-	MaxMemory  string        `yaml:"max_memory"`
+	Enabled   bool          `yaml:"enabled"`
+	Capacity  int           `yaml:"capacity"`
+	MaxTTL    time.Duration `yaml:"max_ttl"`
+	MinTTL    time.Duration `yaml:"min_ttl,omitempty"`    // 最小TTL，可选
+	CustomTTL time.Duration `yaml:"custom_ttl,omitempty"` // 自定义TTL，可选，优先级高于DNS响应中的TTL
+	MaxMemory string        `yaml:"max_memory"`
 }
 
 // PreRefreshConfig 预刷新配置
@@ -74,17 +81,19 @@ type PreRefreshConfig struct {
 type UpstreamConfig struct {
 	Domestic     []UpstreamServer `yaml:"domestic"`
 	Foreign      []UpstreamServer `yaml:"foreign"`
-	BootstrapDNS []string         `yaml:"bootstrap_dns"`
+	Bootstrap    []string         `yaml:"bootstrap"`
 	QueryTimeout time.Duration    `yaml:"query_timeout"`
+	HealthCheck  time.Duration    `yaml:"health_check"`
 }
 
 // UpstreamServer 上游DNS服务器配置
 type UpstreamServer struct {
-	Addr      string        `yaml:"addr"`
-	Protocol  string        `yaml:"protocol"`
-	SNI       string        `yaml:"sni,omitempty"`
-	TLSConfig TLSConfig     `yaml:"tls_config,omitempty"`
-	ECHConfig string        `yaml:"ech_config,omitempty"` // ECH配置，十六进制字符串
+	Addr         string    `yaml:"addr"`
+	Protocol     string    `yaml:"protocol"`
+	SNI          string    `yaml:"sni,omitempty"`
+	TLSConfig    TLSConfig `yaml:"tls_config,omitempty"`
+	ECHConfig    string    `yaml:"ech_config,omitempty"` // ECH配置，十六进制字符串
+	HTTP3Support bool      `yaml:"http3,omitempty"`      // Whether the server supports HTTP/3
 }
 
 // TLSConfig 表示TLS配置
@@ -105,8 +114,6 @@ type SecurityConfig struct {
 	TrustedUpstreams     []string `yaml:"trusted_upstreams"`
 	RestrictedQueryTypes []uint16 `yaml:"restricted_query_types"`
 }
-
-
 
 // Load 从文件加载配置
 func Load(path string) (*Config, error) {
@@ -130,8 +137,18 @@ func Load(path string) (*Config, error) {
 
 // setDefaults 设置配置默认值
 func (c *Config) setDefaults() {
-	// 所有配置都从yaml文件读取，不设置默认值
-	// 确保配置文件中包含所有必要的配置项
+	// 设置健康检查默认值为30秒
+	if c.UpstreamConfig.HealthCheck == 0 {
+		c.UpstreamConfig.HealthCheck = 30 * time.Second
+	}
+
+	// 设置Goroutine池默认值
+	if c.GoroutinePoolConfig.Size <= 0 {
+		c.GoroutinePoolConfig.Size = 100 // 默认100个工作者
+	}
+	if c.GoroutinePoolConfig.QueueSize <= 0 {
+		c.GoroutinePoolConfig.QueueSize = 1000 // 默认队列大小1000
+	}
 }
 
 // ParseMemorySize 解析内存大小字符串（如"128MB"）为字节数

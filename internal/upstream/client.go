@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/quic-go/quic-go/http3"
 )
 
 // Protocol defines the DNS protocol type
@@ -31,14 +31,98 @@ const (
 	ProtocolDoH Protocol = "doh"
 )
 
+// fallbackRoundTripper implements a RoundTripper that tries HTTP/3 first, then falls back to HTTP/2/1.1
+type fallbackRoundTripper struct {
+	http3Transport  *http3.RoundTripper
+	http2Transport  *http.Transport
+	http3FailedAt   time.Time
+	retryHTTP3After time.Duration
+	mutex           sync.RWMutex
+}
+
+// RoundTrip implements the RoundTripper interface
+func (rt *fallbackRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Check if we should skip HTTP/3 attempt
+	shouldSkipHTTP3 := rt.shouldSkipHTTP3()
+	if !shouldSkipHTTP3 {
+		// First try HTTP/3 with a shorter timeout to allow fallback
+		http3Ctx, http3Cancel := context.WithTimeout(req.Context(), 2*time.Second)
+		defer http3Cancel()
+
+		// Clone request with shorter timeout context
+		http3Req := req.Clone(http3Ctx)
+
+		// Try HTTP/3
+		resp, err := rt.http3Transport.RoundTrip(http3Req)
+		if err == nil {
+			// Reset failed timer on success
+			rt.resetHTTP3Failed()
+			return resp, nil
+		}
+		// Record HTTP/3 failure
+		rt.recordHTTP3Failed()
+	}
+
+	// Fall back to HTTP/2/1.1 with original context
+	resp, err := rt.http2Transport.RoundTrip(req)
+	return resp, err
+}
+
+// shouldSkipHTTP3 checks if we should skip HTTP/3 attempt
+func (rt *fallbackRoundTripper) shouldSkipHTTP3() bool {
+	rt.mutex.RLock()
+	defer rt.mutex.RUnlock()
+
+	if rt.http3FailedAt.IsZero() {
+		return false // Never failed before, try HTTP/3
+	}
+
+	// Check if we should retry HTTP/3
+	retryAfter := rt.http3FailedAt.Add(rt.retryHTTP3After)
+	return time.Now().Before(retryAfter)
+}
+
+// recordHTTP3Failed records HTTP/3 failure time
+func (rt *fallbackRoundTripper) recordHTTP3Failed() {
+	rt.mutex.Lock()
+	defer rt.mutex.Unlock()
+
+	// Set default retry interval if not already set
+	if rt.retryHTTP3After == 0 {
+		rt.retryHTTP3After = 30 * time.Second // Retry HTTP/3 every 30 seconds
+	}
+
+	// Only update if it's been more than 1 second since last failure
+	if time.Since(rt.http3FailedAt) > time.Second {
+		rt.http3FailedAt = time.Now()
+	}
+}
+
+// resetHTTP3Failed resets HTTP/3 failure timer on success
+func (rt *fallbackRoundTripper) resetHTTP3Failed() {
+	rt.mutex.Lock()
+	defer rt.mutex.Unlock()
+
+	if !rt.http3FailedAt.IsZero() {
+		rt.http3FailedAt = time.Time{}
+	}
+}
+
+// CloseIdleConnections closes idle connections for both transports
+func (rt *fallbackRoundTripper) CloseIdleConnections() {
+	rt.http3Transport.Close()
+	rt.http2Transport.CloseIdleConnections()
+}
+
 // Config represents the upstream DNS client configuration
 type Config struct {
-	Addr      string        `yaml:"addr"`
-	Protocol  Protocol      `yaml:"protocol"`
-	Timeout   time.Duration `yaml:"timeout"`
-	Retry     int           `yaml:"retry"`
-	Bootstrap []string      `yaml:"bootstrap"`
-	TLSConfig TLSConfig     `yaml:"tls_config"`
+	Addr         string        `yaml:"addr"`
+	Protocol     Protocol      `yaml:"protocol"`
+	Timeout      time.Duration `yaml:"timeout"`
+	Retry        int           `yaml:"retry"`
+	Bootstrap    []string      `yaml:"bootstrap"`
+	TLSConfig    TLSConfig     `yaml:"tls_config"`
+	HTTP3Support bool          `yaml:"http3"` // Whether the server supports HTTP/3
 }
 
 // TLSConfig represents the TLS configuration for DoT and DoH
@@ -196,23 +280,50 @@ func (c *client) initDoHClient() error {
 		return err
 	}
 
-	// Create HTTP client with reliable transport settings
-	// Use standard http.Transport which supports both HTTP/1.1 and HTTP/2
-	httpClient := &http.Client{
-		Transport: &http.Transport{
+	// Create HTTP client based on HTTP3Support flag
+	var httpClient *http.Client
+	if c.config.HTTP3Support {
+		// Server supports HTTP3, enable HTTP3 with fallback
+		http3Transport := &http3.RoundTripper{
+			TLSClientConfig: tlsConfig,
+		}
+
+		// Create HTTP/2 and HTTP/1.1 transport
+		http2Transport := &http.Transport{
 			TLSClientConfig:       tlsConfig,
+			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          100,
-			MaxIdleConnsPerHost:   10,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
-			DialContext: (&net.Dialer{
-				Timeout:   10 * time.Second,
-				KeepAlive: 30 * time.Second,
-				DualStack: true,
-			}).DialContext,
-		},
-		Timeout: c.config.Timeout,
+		}
+
+		// Create fallback transport that tries HTTP/3 first, then falls back to HTTP/2/1.1
+		fallbackTransport := &fallbackRoundTripper{
+			http3Transport: http3Transport,
+			http2Transport: http2Transport,
+		}
+
+		// Create HTTP client with fallback transport
+		httpClient = &http.Client{
+			Timeout:   c.config.Timeout,
+			Transport: fallbackTransport,
+		}
+	} else {
+		// Server does not support HTTP3, use HTTP/2 and HTTP/1.1 only
+		http2Transport := &http.Transport{
+			TLSClientConfig:       tlsConfig,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+
+		httpClient = &http.Client{
+			Timeout:   c.config.Timeout,
+			Transport: http2Transport,
+		}
 	}
 
 	c.dohClient = httpClient
@@ -247,6 +358,7 @@ func (c *client) buildTLSConfig() (*tls.Config, error) {
 
 	// Set default server name from URL if not provided
 	serverName := c.config.TLSConfig.ServerName
+
 	if serverName == "" {
 		switch c.config.Protocol {
 		case ProtocolDoT:
@@ -289,8 +401,8 @@ func (c *client) buildTLSConfig() (*tls.Config, error) {
 	return cfg, nil
 }
 
-// parseCipherSuites parses cipher suite strings to tls.CipherSuite IDs
-func parseCipherSuites(suites []string) ([]uint16, error) {
+// parseCipherSuites returns secure default cipher suites
+func parseCipherSuites(_ []string) ([]uint16, error) {
 	// Use secure default cipher suites regardless of input
 	return []uint16{
 		// TLS 1.3 cipher suites
@@ -349,7 +461,7 @@ func (c *client) exchangeWithRetry(ctx context.Context, m *dns.Msg, useEDNS bool
 
 		// Create a copy of the message for each attempt
 		msgCopy := m.Copy()
-		
+
 		// Set EDNS if requested
 		if useEDNS {
 			msgCopy.SetEdns0(4096, true)
@@ -477,38 +589,24 @@ func (c *client) exchangeDoH(ctx context.Context, m *dns.Msg) (*dns.Msg, error) 
 	// Marshal DNS message to binary
 	data, err := m.Pack()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to pack DNS message: %w", err)
 	}
 
-	// Use only POST method for reliability
-	useGET := false
-
-	var req *http.Request
-	var err2 error
-
-	if useGET {
-		// Use GET method
-		reqURL := *c.dohURL
-		reqURL.RawQuery = "dns=" + hex.EncodeToString(data)
-		req, err2 = http.NewRequestWithContext(ctx, http.MethodGet, reqURL.String(), nil)
-	} else {
-		// Use POST method
-		req, err2 = http.NewRequestWithContext(ctx, http.MethodPost, c.dohServerURL.String(), bytes.NewReader(data))
-		req.Header.Set("Content-Type", "application/dns-message")
+	// Create POST request
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.dohServerURL.String(), bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create DoH request: %w", err)
 	}
 
-	if err2 != nil {
-		return nil, err2
-	}
-
-	// Set common headers
+	// Set headers
+	req.Header.Set("Content-Type", "application/dns-message")
 	req.Header.Set("Accept", "application/dns-message")
 	req.Header.Set("User-Agent", "PuraDNS/1.0")
 
 	// Send request
 	resp, err := c.dohClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("DoH request to %s failed: %w", c.dohServerURL.String(), err)
 	}
 	defer resp.Body.Close()
 
@@ -520,13 +618,13 @@ func (c *client) exchangeDoH(ctx context.Context, m *dns.Msg) (*dns.Msg, error) 
 	// Read response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read DoH response body: %w", err)
 	}
 
 	// Unmarshal DNS message
 	msg := &dns.Msg{}
 	if err := msg.Unpack(body); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to unpack DoH response: %w", err)
 	}
 
 	return msg, nil

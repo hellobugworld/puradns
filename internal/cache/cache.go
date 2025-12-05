@@ -146,25 +146,19 @@ func (sc *shardedCache) getShardIndex(key string) int {
 
 // Get 获取缓存项
 func (sc *shardedCache) Get(key string) (*dns.Msg, bool) {
-	// 根据key计算分片索引
 	shardIndex := sc.getShardIndex(key)
-	// 调用对应分片的Get方法
 	return sc.shards[shardIndex].Get(key)
 }
 
 // Set 设置缓存项
 func (sc *shardedCache) Set(key string, msg *dns.Msg) {
-	// 根据key计算分片索引
 	shardIndex := sc.getShardIndex(key)
-	// 调用对应分片的Set方法
 	sc.shards[shardIndex].Set(key, msg)
 }
 
 // Delete 删除缓存项
 func (sc *shardedCache) Delete(key string) {
-	// 根据key计算分片索引
 	shardIndex := sc.getShardIndex(key)
-	// 调用对应分片的Delete方法
 	sc.shards[shardIndex].Delete(key)
 }
 
@@ -293,7 +287,6 @@ func (c *lruCache) Set(key string, msg *dns.Msg) {
 		entry.ExpiresAt = expiresAt
 		entry.OriginalTTL = ttl // 更新原始TTL
 		c.list.MoveToFront(entry.Element)
-		// 更新统计
 		c.stats.MemoryUsage = c.currentMemory
 		return
 	}
@@ -318,7 +311,6 @@ func (c *lruCache) Set(key string, msg *dns.Msg) {
 	c.cache[key] = entry
 	// 更新内存使用
 	c.currentMemory += msgSize
-	// 更新统计
 	c.stats.MemoryUsage = c.currentMemory
 	c.stats.EntryCount = int64(len(c.cache))
 }

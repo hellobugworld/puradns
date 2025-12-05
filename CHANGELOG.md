@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- 支持从配置文件读取Goroutine池配置（大小和队列大小）
+- 为配置文件添加了用户友好的中文注释
+- 实现了HTTP/3自动回退机制，提高DoH连接可靠性
+
+### Changed
+- 重构了服务器缓存查询逻辑，将if-else结构替换为更清晰的switch语句
+- 优化了配置文件注释，使用更通俗易懂的语言
+- 改进了TLS密码套件配置，使用安全默认值
+
+### Fixed
+- 修复了`parseCipherSuites`函数中未使用的`suites`参数
+- 修复了服务器缓存查询的代码质量问题
+- 删除了项目中所有调试日志，提高生产环境性能
+- 删除了代码中重复的注释，提高代码可读性
+
 ## [1.0.0] - 2025-12-05
 
 ### Added

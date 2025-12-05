@@ -170,28 +170,6 @@ func (s *Server) putMsgToPool(msg *dns.Msg) {
 	s.msgPool.Put(msg)
 }
 
-// getChanFromPool 从对象池获取通道对象
-func (s *Server) getChanFromPool() chan *dns.Msg {
-	return s.chanPool.Get().(chan *dns.Msg)
-}
-
-// putChanToPool 将通道对象放回对象池
-func (s *Server) putChanToPool(ch chan *dns.Msg) {
-	// 清空通道中的剩余数据
-	for {
-		select {
-		case <-ch:
-			// 继续清空
-		default:
-			// 通道已空，退出循环
-			goto done
-		}
-	}
-done:
-	// 将通道放回对象池（不关闭通道，因为关闭的通道无法再次使用）
-	s.chanPool.Put(ch)
-}
-
 // initGoroutinePool initializes the goroutine pool
 func (s *Server) initGoroutinePool() error {
 	// Set default values if not configured
@@ -207,7 +185,6 @@ func (s *Server) initGoroutinePool() error {
 
 	// Create goroutine pool
 	s.workerPool = pool.NewGoroutinePool(poolSize, queueSize)
-	log.Printf("Initialized goroutine pool with %d workers and queue size %d", poolSize, queueSize)
 	return nil
 }
 
@@ -292,8 +269,8 @@ func (s *Server) Start() error {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		log.Printf("Starting UDP DNS server on %s", s.config.ListenAddr)
 		if err := s.udpServer.ListenAndServe(); err != nil {
+			// Log server errors
 			log.Printf("UDP DNS server error: %v", err)
 		}
 	}()
@@ -302,8 +279,8 @@ func (s *Server) Start() error {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		log.Printf("Starting TCP DNS server on %s", s.config.ListenAddrTCP)
 		if err := s.tcpServer.ListenAndServe(); err != nil {
+			// Log server errors
 			log.Printf("TCP DNS server error: %v", err)
 		}
 	}()
@@ -435,19 +412,20 @@ func (s *Server) handleDNSRequestInternal(w dns.ResponseWriter, r *dns.Msg) {
 	var found bool
 
 	// 根据分流决策决定缓存查询策略
-	if group == GroupDomestic {
+	switch group {
+	case GroupDomestic:
 		// domestic组：只查询国内缓存
 		if cachedResp, found = s.cacheManager.GetDomestic().Get(cacheKey); found {
 			s.sendResponse(w, r, cachedResp)
 			return
 		}
-	} else if group == GroupForeign {
+	case GroupForeign:
 		// foreign组：只查询国外缓存
 		if cachedResp, found = s.cacheManager.GetForeign().Get(cacheKey); found {
 			s.sendResponse(w, r, cachedResp)
 			return
 		}
-	} else {
+	case GroupBoth:
 		// "both" group: 优先查询国内缓存，再查询国外缓存
 		// 国内缓存查询
 		if cachedResp, found = s.cacheManager.GetDomestic().Get(cacheKey); found {
@@ -513,6 +491,9 @@ func (s *Server) performQuery(ctx context.Context, r *dns.Msg, group string) (*d
 		pool = s.domesticPool
 	case GroupForeign:
 		pool = s.foreignPool
+	case GroupBoth:
+		// For both groups, query both pools and return the best result
+		return s.queryBothPools(ctx, r)
 	default:
 		// For unknown groups, query both pools and return the best result
 		return s.queryBothPools(ctx, r)
@@ -611,8 +592,12 @@ func (s *Server) validateAndCacheResponse(q dns.Question, resp *dns.Msg, group s
 		s.cacheManager.GetDomestic().Set(cacheKey, resp)
 	case GroupForeign:
 		s.cacheManager.GetForeign().Set(cacheKey, resp)
-	default:
+	case GroupBoth:
 		// Cache in both caches for "both" group
+		s.cacheManager.GetDomestic().Set(cacheKey, resp)
+		s.cacheManager.GetForeign().Set(cacheKey, resp)
+	default:
+		// Cache in both caches for unknown group
 		s.cacheManager.GetDomestic().Set(cacheKey, resp)
 		s.cacheManager.GetForeign().Set(cacheKey, resp)
 	}

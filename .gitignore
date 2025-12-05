@@ -24,8 +24,8 @@ Thumbs.db
 coverage.out
 *.test
 
-# Configuration files (optional, depending on whether you want to include them)
-# puradns.yaml
+# Configuration files
+puradns.yaml
 
 # Logs
 logs/

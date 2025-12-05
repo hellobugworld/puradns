@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -107,10 +106,7 @@ func (m *Manager) IsChinaDomain(domain string) bool {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
-	// 将域名转换为小写，确保匹配不区分大小写
 	domain = strings.ToLower(domain)
-
-	// 使用DomainSet的Match方法，利用Trie树进行高效匹配
 	return m.chinaList.Match(domain)
 }
 
@@ -119,10 +115,7 @@ func (m *Manager) IsGFWDomain(domain string) bool {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
-	// 将域名转换为小写，确保匹配不区分大小写
 	domain = strings.ToLower(domain)
-
-	// 使用DomainSet的Match方法，利用Trie树进行高效匹配
 	return m.gfwList.Match(domain)
 }
 
@@ -201,7 +194,6 @@ func (m *Manager) loadDomainSet(path string, domainSet *DomainSet) error {
 	// 打开文件
 	file, err := os.Open(path)
 	if err != nil {
-		log.Printf("Failed to open %s: %v", path, err)
 		return errors.NewResourceError(fmt.Sprintf("failed to open %s: %v", path, err), err)
 	}
 	defer file.Close()
@@ -238,7 +230,6 @@ func (m *Manager) loadDomainSet(path string, domainSet *DomainSet) error {
 	}
 
 	if err := scanner.Err(); err != nil {
-		log.Printf("Failed to read %s: %v", path, err)
 		return errors.NewResourceError(fmt.Sprintf("failed to read %s: %v", path, err), err)
 	}
 
@@ -284,7 +275,6 @@ func (m *Manager) downloadFile(url, filePath string) error {
 			resp.Body.Close()
 		}
 
-		log.Printf("Download failed (attempt %d/%d): %v", i+1, m.config.MaxRetries, err)
 		if i < m.config.MaxRetries-1 {
 			time.Sleep(m.config.RetryDelay)
 		}
@@ -336,23 +326,13 @@ func (m *Manager) startUpdateLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			// 先下载最新的资源文件
-			if err := m.downloadAllFiles(); err != nil {
-				log.Printf("Failed to download resources: %v", err)
-			}
-			// 然后加载资源
-			if err := m.loadAll(); err != nil {
-				log.Printf("Failed to update resources: %v", err)
-			}
+			// 定期更新资源
+			m.downloadAllFiles()
+			m.loadAll()
 		case <-m.updateChan:
-			// 先下载最新的资源文件
-			if err := m.downloadAllFiles(); err != nil {
-				log.Printf("Failed to download resources: %v", err)
-			}
-			// 然后加载资源
-			if err := m.loadAll(); err != nil {
-				log.Printf("Failed to update resources: %v", err)
-			}
+			// 手动触发更新资源
+			m.downloadAllFiles()
+			m.loadAll()
 		case <-m.stopChan:
 			return
 		}
