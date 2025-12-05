@@ -500,7 +500,6 @@ func (s *Server) determineQueryGroup(domain string) (string, error) {
 		group = GroupBoth
 	}
 
-	log.Printf("Diverter decision for %s: %s", domain, group)
 	return group, nil
 }
 
@@ -523,9 +522,6 @@ func (s *Server) performQuery(ctx context.Context, r *dns.Msg, group string) (*d
 	if pool == nil {
 		return nil, fmt.Errorf("no upstream pool available for group: %s", group)
 	}
-
-	// Set DO bit for DNSSEC support
-	r.SetEdns0(4096, true)
 
 	// Create independent context for single pool queries to avoid main context timeout issues
 	queryCtx, queryCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -621,8 +617,6 @@ func (s *Server) validateAndCacheResponse(q dns.Question, resp *dns.Msg, group s
 		s.cacheManager.GetForeign().Set(cacheKey, resp)
 	}
 
-	log.Printf("Cached response for %s %s", dns.TypeToString[q.Qtype], q.Name)
-
 	return nil
 }
 
@@ -669,12 +663,11 @@ func (s *Server) startPreRefresh() {
 
 	go func() {
 		defer s.preRefreshWg.Done()
-		log.Printf("Starting pre-refresh with interval %v, threshold %.2f", s.config.PreRefreshInterval, s.config.PreRefreshThreshold)
 
 		for {
 			select {
 			case <-s.ctx.Done():
-				log.Println("Stopping pre-refresh")
+
 				return
 			case <-s.preRefreshTicker.C:
 				s.performPreRefresh()
@@ -699,7 +692,7 @@ func (s *Server) performPreRefresh() {
 	}
 
 	if len(expiringKeys) == 0 {
-		log.Println("No expiring keys to pre-refresh")
+
 		return
 	}
 
@@ -719,8 +712,6 @@ func (s *Server) performPreRefresh() {
 		expiringKeys = temp
 	}
 
-	log.Printf("Found %d expiring keys, will pre-refresh %d keys in background", len(expiringKeys), len(expiringKeys))
-
 	// Use a semaphore to control concurrency
 	sem := make(chan struct{}, s.config.PreRefreshMaxConcurrency)
 
@@ -739,7 +730,7 @@ func (s *Server) performPreRefresh() {
 			}(key, group)
 		}
 		wg.Wait()
-		log.Printf("Background pre-refresh completed for %d keys", len(expiringKeys))
+
 	}()
 }
 
@@ -749,7 +740,7 @@ func (s *Server) preRefreshKey(key, group string) {
 	// Cache key format: "domain|type|class"
 	parts := strings.Split(key, "|")
 	if len(parts) != 3 {
-		log.Printf("Invalid cache key format: %s", key)
+
 		return
 	}
 
@@ -760,14 +751,14 @@ func (s *Server) preRefreshKey(key, group string) {
 	// Parse query type
 	qtype, err := strconv.Atoi(typeStr)
 	if err != nil {
-		log.Printf("Failed to parse query type from key %s: %v", key, err)
+
 		return
 	}
 
 	// Parse query class
 	qclass, err := strconv.Atoi(classStr)
 	if err != nil {
-		log.Printf("Failed to parse query class from key %s: %v", key, err)
+
 		return
 	}
 
@@ -797,12 +788,12 @@ func (s *Server) preRefreshKey(key, group string) {
 	case GroupForeign:
 		pool = s.foreignPool
 	default:
-		log.Printf("Unknown group %s for key %s", group, key)
+
 		return
 	}
 
 	if pool == nil {
-		log.Printf("No upstream pool available for group %s", group)
+
 		return
 	}
 
@@ -823,7 +814,7 @@ func (s *Server) preRefreshKey(key, group string) {
 			case GroupForeign:
 				s.cacheManager.GetForeign().Set(cacheKey, resp)
 			}
-			log.Printf("Successfully pre-refreshed %s %s, Rcode: %d", dns.TypeToString[m.Question[0].Qtype], domain, resp.Rcode)
+
 			return
 		}
 
@@ -831,7 +822,6 @@ func (s *Server) preRefreshKey(key, group string) {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	log.Printf("Failed to pre-refresh %s %s after %d attempts: %v", dns.TypeToString[m.Question[0].Qtype], domain, s.config.PreRefreshRetryCount, err2)
 }
 
 // Addr returns the server's listening address

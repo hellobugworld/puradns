@@ -29,8 +29,7 @@ type Config struct {
 	// 安全配置
 	SecurityConfig SecurityConfig `yaml:"security"`
 
-	// 调试配置
-	DebugConfig DebugConfig `yaml:"debug"`
+	
 }
 
 // ResourceURLs 资源文件URL配置
@@ -107,15 +106,7 @@ type SecurityConfig struct {
 	RestrictedQueryTypes []uint16 `yaml:"restricted_query_types"`
 }
 
-// DebugConfig 调试配置
-type DebugConfig struct {
-	Enabled         bool   `yaml:"enabled"`
-	LogLevel        string `yaml:"log_level"`
-	VerboseQuery    bool   `yaml:"verbose_query"`
-	VerboseCache    bool   `yaml:"verbose_cache"`
-	VerboseDiverter bool   `yaml:"verbose_diverter"`
-	VerboseUpstream bool   `yaml:"verbose_upstream"`
-}
+
 
 // Load 从文件加载配置
 func Load(path string) (*Config, error) {

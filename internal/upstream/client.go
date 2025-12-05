@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math/rand"
 	"net"
 	"net/http"
@@ -236,9 +235,6 @@ func parseTLSVersion(version string) (uint16, bool) {
 
 // buildTLSConfig builds the TLS configuration
 func (c *client) buildTLSConfig() (*tls.Config, error) {
-	log.Printf("[DEBUG] Building TLS config for protocol %s", c.config.Protocol)
-	log.Printf("[DEBUG] TLS config from yaml: %+v", c.config.TLSConfig)
-
 	// Parse TLS versions
 	minVersion, minSet := parseTLSVersion(c.config.TLSConfig.MinVersion)
 	maxVersion, maxSet := parseTLSVersion(c.config.TLSConfig.MaxVersion)
@@ -246,7 +242,6 @@ func (c *client) buildTLSConfig() (*tls.Config, error) {
 	// Parse cipher suites
 	cipherSuites, err := parseCipherSuites(c.config.TLSConfig.CipherSuites)
 	if err != nil {
-		log.Printf("[DEBUG] Failed to parse cipher suites: %v", err)
 		return nil, err
 	}
 
@@ -291,9 +286,6 @@ func (c *client) buildTLSConfig() (*tls.Config, error) {
 		cfg.MaxVersion = maxVersion
 	}
 
-	log.Printf("[DEBUG] Final TLS config: ServerName=%s, MinVersion=%d, MaxVersion=%d, InsecureSkipVerify=%t",
-		serverName, cfg.MinVersion, cfg.MaxVersion, c.config.TLSConfig.InsecureSkipVerify)
-
 	return cfg, nil
 }
 
@@ -327,6 +319,26 @@ func (c *client) Exchange(ctx context.Context, m *dns.Msg) (*dns.Msg, error) {
 	var resp *dns.Msg
 	var err error
 
+	// Create a copy of the original message
+	originalMsg := m.Copy()
+
+	// First try with EDNS
+	resp, err = c.exchangeWithRetry(ctx, originalMsg, true)
+	if err == nil && resp != nil && resp.Rcode != dns.RcodeFormatError && resp.Rcode != dns.RcodeServerFailure {
+		return resp, nil
+	}
+
+	// If EDNS failed, try without EDNS
+	resp, err = c.exchangeWithRetry(ctx, originalMsg, false)
+	if err == nil && resp != nil {
+		return resp, nil
+	}
+
+	return resp, err
+}
+
+// exchangeWithRetry sends a DNS query with retry logic
+func (c *client) exchangeWithRetry(ctx context.Context, m *dns.Msg, useEDNS bool) (*dns.Msg, error) {
 	// Implement retry logic with exponential backoff
 	for i := 0; i <= c.config.Retry; i++ {
 		select {
@@ -335,7 +347,15 @@ func (c *client) Exchange(ctx context.Context, m *dns.Msg) (*dns.Msg, error) {
 		default:
 		}
 
-		resp, err = c.exchangeOnce(ctx, m)
+		// Create a copy of the message for each attempt
+		msgCopy := m.Copy()
+		
+		// Set EDNS if requested
+		if useEDNS {
+			msgCopy.SetEdns0(4096, true)
+		}
+
+		resp, err := c.exchangeOnce(ctx, msgCopy)
 		if err == nil && resp != nil && resp.Rcode != dns.RcodeServerFailure {
 			return resp, nil
 		}
@@ -352,7 +372,7 @@ func (c *client) Exchange(ctx context.Context, m *dns.Msg) (*dns.Msg, error) {
 		}
 	}
 
-	return resp, err
+	return nil, errors.New("all retries failed")
 }
 
 // exchangeOnce sends a DNS query once without retry
@@ -403,26 +423,15 @@ func (c *client) exchangeDoT(ctx context.Context, m *dns.Msg) (*dns.Msg, error) 
 	}
 
 	// Send the DoT query using the resolved address
-	log.Printf("[DEBUG] Sending DoT query to %s for %s", addr, m.Question[0].Name)
-	log.Printf("[DEBUG] TLS config: ServerName=%s, MinVersion=%d, MaxVersion=%d",
-		c.dotClient.TLSConfig.ServerName, c.dotClient.TLSConfig.MinVersion, c.dotClient.TLSConfig.MaxVersion)
-
 	resp, _, err := c.dotClient.ExchangeContext(ctx, m, addr)
 	if err != nil {
-		log.Printf("[ERROR] DoT query to %s failed: %v. This may be due to network restrictions, firewall settings, or the DoT server is not accessible from your network. Please check your network settings or try using plain DNS protocol instead.", addr, err)
 		return nil, fmt.Errorf("DoT query to %s failed: %w", addr, err)
 	}
-
-	log.Printf("[DEBUG] DoT query to %s succeeded, Rcode: %d", addr, resp.Rcode)
 	return resp, nil
 }
 
 // resolveHostname resolves a hostname to IP address using bootstrap resolvers
 func (c *client) resolveHostname(ctx context.Context, hostname string) (string, error) {
-	log.Printf("[DEBUG] Resolving hostname %s using bootstrap resolvers", hostname)
-	log.Printf("[DEBUG] Bootstrap resolvers count: %d", len(c.bootstrapResolvers))
-	log.Printf("[DEBUG] Bootstrap addresses: %v", c.config.Bootstrap)
-
 	// Create a DNS query for A record
 	m := &dns.Msg{
 		MsgHdr: dns.MsgHdr{
@@ -442,30 +451,21 @@ func (c *client) resolveHostname(ctx context.Context, hostname string) (string, 
 	for i, bootstrapResolver := range c.bootstrapResolvers {
 		// Get bootstrap DNS address
 		bootstrapAddr := c.config.Bootstrap[i%len(c.config.Bootstrap)]
-		log.Printf("[DEBUG] Trying bootstrap resolver %d: %s", i, bootstrapAddr)
 
 		// Send query
 		resp, _, err := bootstrapResolver.ExchangeContext(ctx, m, bootstrapAddr)
 		if err != nil {
-			log.Printf("[DEBUG] Bootstrap resolver %d failed: %v", i, err)
 			continue
 		}
 
 		// Check if response is valid
-		if resp != nil {
-			log.Printf("[DEBUG] Bootstrap resolver %d returned Rcode: %d", i, resp.Rcode)
-			if resp.Rcode == dns.RcodeSuccess {
-				// Return first A record
-				for _, ans := range resp.Answer {
-					if a, ok := ans.(*dns.A); ok {
-						log.Printf("[DEBUG] Resolved %s to %s using bootstrap resolver %d", hostname, a.A.String(), i)
-						return a.A.String(), nil
-					}
+		if resp != nil && resp.Rcode == dns.RcodeSuccess {
+			// Return first A record
+			for _, ans := range resp.Answer {
+				if a, ok := ans.(*dns.A); ok {
+					return a.A.String(), nil
 				}
-				log.Printf("[DEBUG] Bootstrap resolver %d returned no A records", i)
 			}
-		} else {
-			log.Printf("[DEBUG] Bootstrap resolver %d returned nil response", i)
 		}
 	}
 

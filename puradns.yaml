@@ -22,10 +22,10 @@ resource:
 # 缓存配置
 cache:
   enabled: true
-  capacity: 10000
+  capacity: 20000
   # max_ttl: 1h
   # min_ttl: 15m # 可选，最小TTL
-  custom_ttl: 1h # 可选，自定义TTL，优先级高于DNS响应中的TTL
+  custom_ttl: 30m # 可选，自定义TTL，优先级高于DNS响应中的TTL
   max_memory: 256MB
 
 # 预刷新配置
@@ -48,15 +48,16 @@ upstream:
       protocol: "plain"
   # 国外DNS服务器
   foreign:
-    # AliDNS over TLS (IPv4) using domain name
-    - addr: "1.1.1.1:853"
-      protocol: "dot"
+    - addr: "180.214.182.154:54"
+      protocol: "plain"
+    - addr: "1.34.31.175:54"
+      protocol: "plain"
   # 查询超时时间
-  query_timeout: 5s
+  query_timeout: 2s
   # 重试次数
   retry_count: 1
   # 重试延迟
-  retry_delay: 100ms
+  retry_delay: 10ms
 
 # 安全配置
 security:
@@ -71,12 +72,3 @@ security:
 goroutinepool:
   size: 150
   queue_size: 1500
-
-# 调试配置
-debug:
-  enabled: false
-  log_level: "info"
-  verbose_query: false
-  verbose_cache: false
-  verbose_diverter: false
-  verbose_upstream: false

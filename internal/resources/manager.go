@@ -243,15 +243,14 @@ func (m *Manager) loadDomainSet(path string, domainSet *DomainSet) error {
 	}
 
 	// 打印加载结果
-	log.Printf("Loaded %d domains from %s", len(newDomainSet.domains), path)
 
 	m.mutex.Lock()
 	if domainSet == m.chinaList {
 		m.chinaList = newDomainSet
-		log.Printf("Updated China list with %d domains", len(newDomainSet.domains))
+
 	} else {
 		m.gfwList = newDomainSet
-		log.Printf("Updated GFW list with %d domains", len(newDomainSet.domains))
+
 	}
 	m.mutex.Unlock()
 
@@ -264,8 +263,6 @@ func (m *Manager) downloadFile(url, filePath string) error {
 		// URL未配置，跳过下载
 		return nil
 	}
-
-	log.Printf("Downloading file from %s to %s", url, filePath)
 
 	// 创建HTTP客户端
 	client := &http.Client{
@@ -328,7 +325,6 @@ func (m *Manager) downloadFile(url, filePath string) error {
 		return fmt.Errorf("failed to rename temp file: %v", err)
 	}
 
-	log.Printf("Successfully downloaded %s to %s", url, filePath)
 	return nil
 }
 

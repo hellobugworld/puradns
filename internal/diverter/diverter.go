@@ -1,7 +1,6 @@
 package diverter
 
 import (
-	"log"
 	"net"
 	"strings"
 
@@ -62,8 +61,6 @@ func (d *diverter) Decide(domain string) Decision {
 	// 检查域名是否在国内列表
 	isChinaDomain := d.resourceManager.IsChinaDomain(domain)
 	isGFWDomain := d.resourceManager.IsGFWDomain(domain)
-
-	log.Printf("Domain check for %s: IsChinaDomain=%v, IsGFWDomain=%v", domain, isChinaDomain, isGFWDomain)
 
 	if isChinaDomain {
 		return DecisionDomestic
